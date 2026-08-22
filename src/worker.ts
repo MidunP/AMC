@@ -4,7 +4,9 @@ import { getLogger } from './config/logger';
 import { runMigrations, pruneOldLogs } from './db/migrations';
 import { getActiveWatches } from './db/repository';
 import { runWatchCycle } from './watcher/watcherWorker';
-import { sendStartupMessage, sendProcessError } from './notify/telegram';
+import { sendStartupMessage, sendProcessError, sendDailyHeartbeat } from './notify/telegram';
+import { getWindowStatus } from './watcher/timeWindow';
+import { startTelegramBotListener } from './notify/botCommands';
 
 const log = getLogger('worker');
 
@@ -28,12 +30,13 @@ async function bootstrap(): Promise<void> {
     // 5. Count booking-aware watches
     const bookingAware = watches.filter((w) => w.expected_opening_at !== null).length;
 
-    // 6. Send startup Telegram message
+    // 6. Send startup Telegram message & start remote control bot listener
     await sendStartupMessage({
         watchCount: watches.length,
         pollIntervalMinutes: env.POLL_INTERVAL_MINUTES,
         bookingAwareCount: bookingAware,
     });
+    startTelegramBotListener();
 
     // 7. Build cron expression from POLL_INTERVAL_MINUTES
     const intervalMinutes = env.POLL_INTERVAL_MINUTES;
@@ -53,6 +56,33 @@ async function bootstrap(): Promise<void> {
             log.error({ err }, 'Watch cycle failed');
         }
     });
+
+    // 10. Daily heartbeat cron — 9:00 AM IST every day
+    //     Sends a Telegram status update with countdown for each active watch.
+    //     Keeps the user informed even when opens are days away.
+    cron.schedule('0 9 * * *', async () => {
+        log.info('📅 Sending daily heartbeat');
+        try {
+            const activeWatches = getActiveWatches();
+            const now = new Date();
+
+            const heartbeatWatches = activeWatches.map((w) => {
+                const ws = getWindowStatus(w, now);
+                return {
+                    movie: w.movie,
+                    targetDate: w.target_date,
+                    expectedOpeningAt: w.expected_opening_at,
+                    msUntilOpening: ws.msUntilOpening,
+                };
+            });
+
+            if (heartbeatWatches.length > 0) {
+                await sendDailyHeartbeat({ watches: heartbeatWatches });
+            }
+        } catch (err) {
+            log.error({ err }, 'Daily heartbeat failed');
+        }
+    }, { timezone: 'Asia/Kolkata' });
 
     log.info(`✅ Watcher running. Checking every ${intervalMinutes} minute(s). Press Ctrl+C to stop.`);
 }

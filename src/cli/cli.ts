@@ -13,8 +13,10 @@ import {
     getCheckLogs,
 } from '../db/repository';
 import { sendTestMessage } from '../notify/telegram';
-import { checkBroadwayShowtimes } from '../cinema/broadway/broadway.adapter';
+import { checkBroadwayShowtimes, probeVenueApi } from '../cinema/broadway/broadway.adapter';
 import { insertCheckLog, updateLastChecked } from '../db/repository';
+import { attemptSeatHold } from '../booking/booking.service';
+import { setupBmsSession, hasSession, SESSION_FILE } from '../booking/browserSession';
 
 const program = new Command();
 
@@ -25,6 +27,7 @@ program
 
 // ─── add ───────────────────────────────────────────────────────────────────────
 
+
 program
     .command('add')
     .description('Add a new movie watch')
@@ -34,13 +37,46 @@ program
     .option('--format <format>', 'Preferred format (EPIQ, 3D, 2D, etc.)')
     .option('--showtime <time>', 'Preferred showtime (e.g. "6:00 PM")')
     .option('--party-size <n>', 'Number of seats needed', '1')
-    .option('--open <datetime>', 'Expected booking opening time (ISO 8601)')
-    .option('--active-from <datetime>', 'Activation window start (ISO 8601)')
-    .option('--active-until <datetime>', 'Activation window end (ISO 8601)')
+    .option('--open <datetime>', 'Expected booking opening time — ISO 8601 or "YYYY-MM-DD HH:MM" in IST')
+    .option('--active-from <datetime>', 'Override: activation window start (default: 30 min before --open)')
+    .option('--active-until <datetime>', 'Override: activation window end (default: 3 hr after --open)')
     .option('--seats <seats>', 'Preferred seats, comma-separated (e.g. "H12,H13")')
     .option('--fallback <seats>', 'Fallback seat groups, semicolon-separated (e.g. "H11,H12;G12,G13")')
     .action((opts) => {
         runMigrations();
+
+        // ── Auto-compute booking window from --open ───────────────────────────
+        // If the user only provides --open (the common case), automatically
+        // set --active-from (30 min early) and --active-until (3 hours after).
+        // This is the "set and forget" mode: add the watch days ahead, forget it.
+
+        let activationStart: string | null = opts.activeFrom ?? null;
+        let activationEnd: string | null = opts.activeUntil ?? null;
+        let windowAutoComputed = false;
+
+        if (opts.open) {
+            // Parse IST shorthand: "2026-12-25 10:00" → ISO with +05:30
+            let openStr = opts.open as string;
+            if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(openStr)) {
+                openStr = `${openStr}:00+05:30`;
+            }
+
+            const openTime = new Date(openStr);
+
+            if (!isNaN(openTime.getTime())) {
+                if (!activationStart) {
+                    const from = new Date(openTime.getTime() - 30 * 60 * 1000);
+                    activationStart = from.toISOString();
+                    windowAutoComputed = true;
+                }
+                if (!activationEnd) {
+                    const until = new Date(openTime.getTime() + 3 * 60 * 60 * 1000);
+                    activationEnd = until.toISOString();
+                }
+            } else {
+                console.error('\n⚠️  Could not parse --open time. Use ISO 8601 or "YYYY-MM-DD HH:MM" format.\n');
+            }
+        }
 
         const watch = createWatch({
             movie: opts.movie,
@@ -49,24 +85,77 @@ program
             preferred_format: opts.format ?? null,
             preferred_showtime: opts.showtime ?? null,
             party_size: parseInt(opts.partySize, 10),
-            expected_opening_at: opts.open ?? null,
-            activation_start: opts.activeFrom ?? null,
-            activation_end: opts.activeUntil ?? null,
+            expected_opening_at: opts.open ? new Date(
+                /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(opts.open)
+                    ? `${opts.open}:00+05:30`
+                    : opts.open
+            ).toISOString() : null,
+            activation_start: activationStart,
+            activation_end: activationEnd,
             preferred_seats: opts.seats ?? null,
             fallback_seats: opts.fallback ?? null,
         });
 
+        // ── Pretty confirmation ───────────────────────────────────────────────
+        const openAt = watch.expected_opening_at
+            ? new Date(watch.expected_opening_at).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short'
+            })
+            : null;
+        const msUntilOpen = watch.expected_opening_at
+            ? new Date(watch.expected_opening_at).getTime() - Date.now()
+            : null;
+        const countdownStr = msUntilOpen !== null && msUntilOpen > 0
+            ? formatCountdownCli(msUntilOpen)
+            : null;
+
         console.log('');
-        console.log('✅ Watch added!');
-        console.log(`   ID:       ${watch.id}`);
-        console.log(`   Movie:    ${watch.movie}`);
-        console.log(`   Theatre:  ${watch.theatre}`);
-        console.log(`   Date:     ${watch.target_date}`);
-        console.log(`   Format:   ${watch.preferred_format ?? 'Any'}`);
-        console.log(`   Seats:    ${watch.preferred_seats ?? 'Not configured'}`);
-        console.log(`   Opens:    ${watch.expected_opening_at ?? 'Not configured'}`);
+        console.log('✅ Watch added! The watcher will monitor this automatically.');
+        console.log('─'.repeat(60));
+        console.log(`   ID:         ${watch.id}`);
+        console.log(`   Movie:      ${watch.movie}`);
+        console.log(`   Date:       ${watch.target_date}`);
+        console.log(`   Format:     ${watch.preferred_format ?? 'Any'}`);
+        console.log(`   Theatre:    ${watch.theatre}`);
+        console.log(`   Seats:      ${watch.preferred_seats ?? 'Not configured'}`);
+        console.log(`   Fallback:   ${watch.fallback_seats ?? 'Not configured'}`);
+
+        if (openAt) {
+            console.log('');
+            console.log(`   ⏰ Booking opens: ${openAt} IST${countdownStr ? ` (in ${countdownStr})` : ''}`);
+        }
+        if (windowAutoComputed && activationStart && activationEnd) {
+            const fromStr = new Date(activationStart).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata', timeStyle: 'short'
+            });
+            const untilStr = new Date(activationEnd).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata', timeStyle: 'short'
+            });
+            console.log(`   🔔 Active window: ${fromStr} → ${untilStr} IST (auto-computed)`);
+            console.log('');
+            console.log('   💡 The watcher will:');
+            console.log('      • Background-check every 30 min anytime (catches early releases)');
+            console.log(`      • Send you a "get ready" alert ~1 hour before ${openAt}`);
+            console.log('      • Switch to aggressive polling from', fromStr, 'onward');
+            console.log('      • Send TICKETS LIVE the moment booking opens');
+        }
+        console.log('─'.repeat(60));
+        console.log('');
+        console.log('   Run: npm run worker  (to start the background watcher)');
         console.log('');
     });
+
+function formatCountdownCli(ms: number): string {
+    const totalMinutes = Math.floor(ms / 60000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+}
+
+
 
 // ─── list ──────────────────────────────────────────────────────────────────────
 
@@ -235,6 +324,85 @@ program
             console.log('✅ Test message sent! Check your Telegram.\n');
         } else {
             console.error('❌ Failed to send test message. Check your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.\n');
+            process.exit(1);
+        }
+        process.exit(0);
+    });
+
+// ─── probe ─────────────────────────────────────────────────────────────────────
+// Phase 8: Inspect raw BMS API response for a movie + date at Broadway Coimbatore
+
+program
+    .command('probe')
+    .description('[Phase 8] Dump raw BMS API response for venue validation')
+    .requiredOption('--movie <name>', 'Movie name to look up')
+    .requiredOption('--date <date>', 'Target date (YYYY-MM-DD)')
+    .action(async (opts) => {
+        const dateCode = opts.date.replace(/-/g, '');
+        console.log(`\n🔎 Probing BMS for "${opts.movie}" on ${opts.date} @ Broadway Coimbatore...\n`);
+        const result = await probeVenueApi(opts.movie, dateCode);
+        console.log(JSON.stringify(result, null, 2));
+        console.log('');
+        process.exit(0);
+    });
+
+// ─── capability ────────────────────────────────────────────────────────────────
+// Phase 10: Run booking capability detection on a watch's current best show
+
+program
+    .command('capability')
+    .description('[Phase 10] Run seat hold capability detection for a watch')
+    .requiredOption('--id <id>', 'Watch ID')
+    .action(async (opts) => {
+        runMigrations();
+        const id = parseInt(opts.id, 10);
+        const watch = getWatchById(id);
+        if (!watch) { console.error(`❌ Watch ID ${id} not found.`); process.exit(1); }
+
+        console.log(`\n🔬 Running capability check for [${id}] "${watch.movie}"...`);
+        const checkResult = await checkBroadwayShowtimes(watch);
+
+        if (!checkResult.success || checkResult.shows.length === 0) {
+            console.log('\n⚠️  No bookable shows found — cannot run capability detection.');
+            console.log(`   Blocked: ${checkResult.blocked}, ParseError: ${checkResult.parseError}`);
+            process.exit(0);
+        }
+
+        const show = checkResult.shows[0];
+        console.log(`\n🎟️  Best show: ${show.movie} @ ${show.showtime} (${show.format}) — ${show.bookingUrl}`);
+
+        const capResult = await attemptSeatHold(show, { found: false, seats: [], source: 'none', seatStatuses: {} }, id);
+
+        console.log('\n📊 Capability Report:');
+        console.log(`   Seat Map:         ${capResult.capabilities.seatMap}`);
+        console.log(`   Seat Selection:   ${capResult.capabilities.seatSelection}`);
+        console.log(`   Seat Hold:        ${capResult.capabilities.seatHold}`);
+        console.log(`   Resumable URL:    ${capResult.capabilities.resumableBookingSession}`);
+        console.log(`   Payment:          ${capResult.capabilities.payment}`);
+        console.log(`\n📝 Notes:\n${capResult.notes}`);
+        console.log('');
+        process.exit(0);
+    });
+
+// ─── session:setup ──────────────────────────────────────────────────────────────────
+// One-time: opens a visible browser for the user to log in to BMS.
+// The session is saved and reused headlessly for all future seat holds.
+
+program
+    .command('session:setup')
+    .description('One-time BMS login setup — enables automated seat holding')
+    .action(async () => {
+        if (hasSession()) {
+            console.log(`\n⚠️  A session already exists at: ${SESSION_FILE}`);
+            console.log('   Re-running will overwrite it with a fresh login.\n');
+        }
+        try {
+            await setupBmsSession();
+            console.log('\n✅ Setup complete! Session saved.');
+            console.log('   The seat holder will now use this session automatically.');
+            console.log('   Run: npm run worker:prod  to start monitoring.\n');
+        } catch (err) {
+            console.error('\n❌ Session setup failed:', (err as Error).message);
             process.exit(1);
         }
         process.exit(0);

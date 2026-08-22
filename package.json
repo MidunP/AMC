@@ -19,6 +19,9 @@
     "watch:check": "ts-node src/cli/cli.ts check",
     "test:notify": "ts-node src/cli/cli.ts test-notify",
     "logs": "ts-node src/cli/cli.ts logs",
+    "watch:probe": "ts-node src/cli/cli.ts probe",
+    "watch:capability": "ts-node src/cli/cli.ts capability",
+    "session:setup": "ts-node src/cli/cli.ts session:setup",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix"
   },
@@ -35,6 +38,7 @@
     "node-cron": "^3.0.3",
     "pino": "^9.5.0",
     "pino-pretty": "^13.0.0",
+    "playwright": "^1.62.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

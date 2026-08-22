@@ -161,7 +161,86 @@ export async function sendProcessError(err: Error): Promise<boolean> {
     return sendTelegramMessage(text);
 }
 
+/**
+ * Sent ~1 hour before the expected booking opening time.
+ * Gives the user a heads-up to be ready at their phone.
+ */
+export async function sendApproachingAlert(opts: {
+    movie: string;
+    minutesUntilOpening: number;
+    expectedOpeningAt: string;
+}): Promise<boolean> {
+    const timeStr = new Date(opts.expectedOpeningAt).toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Kolkata',
+    });
+
+    const text =
+        `⏰ <b>BOOKING OPENS SOON!</b>\n\n` +
+        `🎬 <b>${opts.movie}</b>\n\n` +
+        `🕐 Expected at: <b>${timeStr} IST</b>\n` +
+        `⏳ Opens in approx. <b>${opts.minutesUntilOpening} minutes</b>\n\n` +
+        `📱 Stay near your phone — watcher is on high-alert!\n` +
+        `🚨 You'll get another alert the moment tickets go live.`;
+
+    return sendTelegramMessage(text);
+}
+
+/**
+ * Sent once a day at 9 AM while watches are in idle state.
+ * A reassuring "I'm still running" ping with countdown for each movie.
+ */
+export async function sendDailyHeartbeat(opts: {
+    watches: Array<{
+        movie: string;
+        targetDate: string;
+        expectedOpeningAt: string | null;
+        msUntilOpening: number | null;
+    }>;
+}): Promise<boolean> {
+    const now = new Date().toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+    });
+
+    let text = `👁️ <b>DAILY WATCH STATUS</b>\n<i>${now} IST</i>\n\n`;
+
+    for (const w of opts.watches) {
+        const countdown =
+            w.msUntilOpening !== null
+                ? `opens in <b>${formatCountdown(w.msUntilOpening)}</b>`
+                : 'actively monitoring';
+        const openingTime = w.expectedOpeningAt
+            ? new Date(w.expectedOpeningAt).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                dateStyle: 'medium',
+                timeStyle: 'short',
+            })
+            : null;
+        text += `🎬 <b>${w.movie}</b>\n`;
+        text += `   Show date: ${w.targetDate}\n`;
+        text += `   Status: ${countdown}\n`;
+        if (openingTime) text += `   Booking: ${openingTime} IST\n`;
+        text += `\n`;
+    }
+
+    text += `🟢 Watcher is running normally.`;
+    return sendTelegramMessage(text);
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
+
+function formatCountdown(ms: number): string {
+    const totalMinutes = Math.floor(ms / 60000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+}
 
 function formatSeatStatus(seats: string[], statuses: Record<string, SeatStatus>): string {
     if (seats.length === 0) return 'No preferred seats configured.';

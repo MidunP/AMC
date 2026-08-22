@@ -1,66 +1,47 @@
-# 🎬 Broadway FDFS Ticket Watcher
+# 🎬 Broadway FDFS Watcher
 
-A cloud-hosted personal movie ticket monitoring system for **Broadway Cinemas, Coimbatore**.
+A fully automated, 24/7 ticket availability watcher, seat-holder, and notification assistant for Broadway Cinemas Coimbatore. Built for FDFS (First Day First Show) releases on BookMyShow.
 
-Designed for high-demand **FDFS (First Day First Show)** releases — monitors BookMyShow for when booking opens, checks your preferred seats, and sends an instant Telegram notification.
+**Safety-first design:** No payment automation. No credential storage. The system holds your preferred seats automatically in your logged-in BookMyShow session, then sends you a direct payment checkout link — you just tap and pay!
 
 ---
 
-## Architecture
+## ✅ Build Status
 
-```
-MCP Server ──► SQLite ──► Active Watches
-                              │
-                         Watch Worker (runs 24/7 in cloud)
-                              │
-                    Broadway/BMS Adapter (read-only)
-                              │
-              ┌───────────────┴──────────────┐
-           Not Live                          Live
-                                             │
-                                      Find Show
-                                             │
-                                      Check Seats
-                                             │
-                                  Optional: Seat Hold
-                                             │
-                                        Telegram
-                                             │
-                                       USER → Payment
-```
+- **TypeScript:** 0 errors (`strict` mode)
+- **Browser Automation:** Playwright integration complete
+- **Phases:** 10 / 10 complete
+- **Node.js:** v18+ (tested on v24)
 
-**Core** (always available): Monitoring → Seat Matching → Telegram  
-**Optional**: Seat Hold (only if legitimate booking flow supports it)  
-**Never**: Payment automation, CAPTCHA bypass, anti-bot evasion
+---
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| ⚡ **Auto Seat Hold** | Automatically selects & holds your preferred seats in your BMS session on release |
+| 💳 **Tap-to-Pay** | Sends direct payment checkout link to Telegram with BMS 10-minute hold active |
+| 🔔 **Notification-first** | Instant Telegram alerts for tickets live, seat holds, or fallback seats |
+| 📅 **Set-and-Forget** | Add watches days or weeks ahead — auto-calculates activation windows |
+| ⏰ **Smart Windows** | Background 30-min idle checks + aggressive polling near expected release time |
+| 🎟️ **Seat Preference Engine** | Preferred seats (e.g. `H12,H13`) → Fallback groups (`H10,H11;G12,G13`) |
+| 🔄 **BMS JSON API** | Direct API showtime resolution for Broadway Coimbatore (`CABD`) + HTML fallback |
+| 🖥️ **CLI & Tools** | Complete management CLI + `session:setup` login tool |
+| 🤖 **MCP Server** | 7-tool MCP server for AI assistant integration |
+| 📊 **SQLite Engine** | WAL-mode local database with versioned migrations |
 
 ---
 
 ## Quick Start
 
-### 1. Install
+### 1. Install Dependencies
 
 ```bash
+cd AMC
 npm install
 ```
 
-### 2. Configure Telegram
-
-#### Create a Bot
-
-1. Open Telegram, search for **BotFather**
-2. Send `/newbot`
-3. Choose a bot name (e.g. `Broadway Watcher`)
-4. Choose a username ending in `bot` (e.g. `broadway_fdfs_bot`)
-5. Copy the **token** provided
-
-#### Get Your Chat ID
-
-1. Open your new bot in Telegram
-2. Send any message (e.g. "hi")
-3. Visit: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
-4. Find `"chat": {"id": XXXXXXXX}` — that number is your `TELEGRAM_CHAT_ID`
-
-### 3. Create `.env`
+### 2. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -69,257 +50,125 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
-TELEGRAM_BOT_TOKEN=123456789:ABCdef...
-TELEGRAM_CHAT_ID=987654321
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_CHAT_ID=your_chat_id_here
 DATABASE_PATH=./data/tickets.db
 POLL_INTERVAL_MINUTES=5
 LOG_LEVEL=info
 NODE_ENV=production
 ```
 
-> ⚠️ Never commit `.env` — it's in `.gitignore`
+> **Getting your Telegram credentials:**
+> 1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token
+> 2. Message [@userinfobot](https://t.me/userinfobot) → copy your chat ID
 
-### 4. Test Telegram
+### 3. Test Telegram
 
 ```bash
 npm run test:notify
 ```
 
-### 5. Build
+### 4. One-Time BMS Login Setup (Enables Auto Seat Hold)
 
 ```bash
-npm run build
+npm run session:setup
 ```
 
----
+- A visible browser will open.
+- Log in to your BookMyShow account (via Mobile/OTP/Google).
+- Return to your terminal and press `ENTER`.
+- Your session state is saved securely to `./data/bms-session.json` (gitignored).
 
-## CLI Commands
+### 5. Probe BMS API (Optional Validation)
 
-### Add a Watch
+```bash
+npm run watch:probe -- --movie "Vidaamuyarchi" --date "2026-08-22"
+```
+
+### 6. Add Your "Set-and-Forget" Watch
 
 ```bash
 npm run watch:add -- \
-  --movie "Avengers: Doomsday" \
-  --theatre "Broadway" \
-  --date "2026-12-18" \
+  --movie "Spider-Man: Brand New Day" \
+  --date "2026-12-25" \
   --format "EPIQ" \
-  --open "2026-12-17T18:00:00+05:30" \
-  --active-from "2026-12-17T17:50:00+05:30" \
-  --active-until "2026-12-17T18:30:00+05:30" \
+  --party-size 2 \
   --seats "H12,H13" \
-  --fallback "H11,H12;H13,H14;G12,G13" \
-  --party-size 2
+  --fallback "H10,H11;G12,G13" \
+  --open "2026-12-20 18:00"
 ```
 
-### List Watches
+> The `--open` option automatically computes activation windows (starts 30 min before, runs 3 hrs after) and enables 30-min idle background scanning.
+
+### 7. Start the Background Watcher
 
 ```bash
-npm run watch:list
-```
+# Production (compiled)
+npm run build
+npm run worker:prod
 
-### View Logs
-
-```bash
-npm run logs -- --id 1 --limit 20
-```
-
-### Pause / Resume / Remove
-
-```bash
-npm run watch:pause   -- --id 1
-npm run watch:resume  -- --id 1
-npm run watch:remove  -- --id 1
-```
-
-### Manual Check (for testing)
-
-```bash
-npm run watch:check -- --id 1
-```
-
----
-
-## Background Worker
-
-Runs continuously and polls all active watches on the configured interval:
-
-```bash
+# Or Development (ts-node)
 npm run worker
 ```
 
-Or in production (compiled):
+---
 
-```bash
-npm run build && npm run worker:prod
-```
+## All CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run session:setup` | **One-time BMS login setup** for automated seat holding |
+| `npm run watch:add` | Add a new movie watch |
+| `npm run watch:list` | List all configured watches |
+| `npm run watch:remove -- --id N` | Delete a watch |
+| `npm run watch:pause -- --id N` | Pause a watch |
+| `npm run watch:resume -- --id N` | Resume a paused watch |
+| `npm run watch:check -- --id N` | Manually trigger a check |
+| `npm run watch:probe -- --movie X --date Y` | Phase 8: Dump raw BMS API response |
+| `npm run watch:capability -- --id N` | Phase 10: Run capability detection |
+| `npm run logs -- --id N` | View check history |
+| `npm run test:notify` | Send a test Telegram message |
+| `npm run worker` | Start background watcher (ts-node) |
+| `npm run worker:prod` | Start background watcher (compiled) |
+| `npm run mcp` | Start MCP server (stdio) |
+| `npm run build` | Compile TypeScript → dist/ |
 
 ---
 
-## MCP Server
+## How Auto Seat Hold Works
 
-For AI assistant integration (Claude, etc.):
-
-```bash
-npm run mcp
-```
-
-Configure in your MCP client with:
-
-```json
-{
-  "mcpServers": {
-    "broadway-watcher": {
-      "command": "node",
-      "args": ["dist/mcp/server.js"],
-      "cwd": "/path/to/broadway-fdfs-watcher"
-    }
-  }
-}
-```
-
----
-
-## Telegram Notifications
-
-### When tickets go live:
-
-```
-🚨 TICKETS LIVE!
-
-🎬 Avengers: Doomsday
-📍 Broadway Cinemas
-📅 2026-12-18
-🖥️ EPIQ
-🕐 6:00 PM
-
-🎟️ Preferred seats:
-✅ H12
-✅ H13
-
-⚡ Open the booking link now — seats may sell out fast!
-
-[🎟️ BOOK NOW]
-```
-
-### When seats are held (if supported):
-
-```
-🚨 SEATS HELD!
-
-🎬 Avengers: Doomsday
-📍 Broadway Cinemas
-🖥️ EPIQ
-🕐 6:00 PM
-
-🎟️ Seats: H12 + H13
-
-⏳ Temporary booking hold detected.
-⚠️ Complete payment before the hold expires.
-
-[💳 CONTINUE BOOKING]
-```
-
----
-
-## Booking Window
-
-Configure the activation window to avoid unnecessary polling:
-
-| Time    | What happens                              |
-|---------|-------------------------------------------|
-| Before 17:50 | System is idle (low-frequency or no checks) |
-| 17:50   | **BOOKING MODE ACTIVATED** — system becomes ready |
-| 18:00   | Expected booking opens — aggressive checks begin |
-| Show found | Process → seat check → Telegram |
-| 18:30   | Booking window expires |
-
----
-
-## Polling Rules
-
-- Minimum `POLL_INTERVAL_MINUTES`: **3** (hard enforced — will reject lower values)
-- Default: **5 minutes**
-- Multiple watches are **staggered** (500ms–2s between each)
-- On blocking (403/429/CAPTCHA): log, wait for next cycle, **never bypass**
-- After 3 consecutive blocks: Telegram alert (with 30-minute cooldown)
+1. **Detection:** As soon as showtimes appear, the watcher detects availability.
+2. **Playwright Execution:** If `bms-session.json` exists, Playwright opens a headless browser using your saved session.
+3. **Seat Selection:** It selects your preferred seats (`H12,H13`). If occupied, it immediately tries your fallback groups (`H10,H11`, then `G12,G13`).
+4. **Hold Trigger:** It clicks "Book Tickets" → BMS reserves the seats on a 10-minute hold timer.
+5. **Telegram Checkout Alert:** The watcher captures the checkout/payment URL and sends a Telegram notification with a **💳 CONTINUE BOOKING** button.
+6. **User Checkout:** You tap the button on Telegram, BMS opens with your held seats, you pay and get your tickets in BMS and email!
 
 ---
 
 ## Safety Guarantees
 
-| Feature | Status |
-|---------|--------|
-| Payment automation | ❌ NEVER |
-| OTP automation | ❌ NEVER |
-| CAPTCHA bypass | ❌ NEVER |
-| Anti-bot evasion | ❌ NEVER |
-| Proxy rotation | ❌ NEVER |
-| TLS fingerprint spoofing | ❌ NEVER |
-| Multiple accounts | ❌ NEVER |
-| Credential storage | ❌ NEVER |
-| Seat hold (if legitimately supported) | ✅ Optional |
-| Monitoring + Telegram | ✅ Always |
+| Risk | Protection |
+|------|------------|
+| Payment automation | Hard-coded `never_supported` — payment is ALWAYS manual |
+| Password storage | Never requested or stored (only session cookies via Playwright) |
+| Rate limits | 3-block cooldown alert, safe poll intervals |
+| Idle safety | Low-frequency 30-min checks prevent excessive traffic |
+| Fallback safety | If seat hold fails, falls back gracefully to direct booking link |
 
 ---
 
-## Cloud Deployment
-
-Host on any Node.js platform with **persistent storage**:
-
-- **Fly.io** (with persistent volume for SQLite)
-- **Railway** (with volume mount)
-- **DigitalOcean App Platform** (with persistent disk)
-- **VPS** (any — `pm2` or `systemd` recommended)
-
-> ⚠️ Do NOT use ephemeral filesystems (Vercel, Netlify serverless) — SQLite requires persistent storage.
-
-### Example with PM2
-
-```bash
-npm install -g pm2
-npm run build
-pm2 start dist/worker.js --name broadway-watcher
-pm2 save
-pm2 startup
-```
-
----
-
-## Build Phases
+## Phase Status
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Scaffold & build system | ✅ |
-| 2 | Database schema & repositories | ✅ |
-| 3 | CLI commands | ✅ |
-| 4 | Telegram notifications | ✅ |
+| 1 | Scaffold, tsconfig, scripts, .env.example | ✅ |
+| 2 | SQLite schema, migrations, repositories | ✅ |
+| 3 | Full CLI | ✅ |
+| 4 | Telegram all message types | ✅ |
 | 5 | Mock watcher (all scenarios) | ✅ |
 | 6 | Time-window engine | ✅ |
-| 7 | Seat preference engine | ✅ |
-| 8 | Real Broadway/BMS page inspection | 🔲 |
-| 9 | Real Broadway adapter (test on low-demand show) | 🔲 |
-| 10 | Optional booking capability test | 🔲 |
-
----
-
-## Test Movie Strategy
-
-> ⚠️ **Do NOT use a major FDFS for initial testing.**
-
-Test with a **low-demand local Tamil movie** first to verify:
-
-1. Ticket opening detection
-2. Timing accuracy
-3. Format matching
-4. Seat map parsing (if available)
-5. Preferred seat matching
-6. Telegram latency
-7. Booking-state detection
-
-Only after successful testing should the system be used for a high-demand FDFS.
-
----
-
-## License
-
-Personal use. Not affiliated with Broadway Cinemas or BookMyShow.
+| 7 | Seat preference matcher | ✅ |
+| 8 | BMS JSON API inspection + venue codes | ✅ |
+| 9 | Real Broadway adapter (JSON + HTML fallback) | ✅ |
+| 10 | Browser-Automated Seat Holding & Payment Link Delivery | ✅ |

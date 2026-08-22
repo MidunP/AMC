@@ -1,21 +1,26 @@
 import type { BookingCapabilities, MovieShow, SeatSelectionResult } from '../types';
+import { loadBmsSession, hasSession } from './browserSession';
+import { holdSeatsAutomated, parseFallbackGroups } from './seatHolder';
 import { getLogger } from '../config/logger';
 
 const log = getLogger('booking-service');
 
 /**
- * Booking Capability Detection & Optional Seat Hold
+ * Booking Service — Phase 10 + Browser Automation
  *
- * IMPORTANT: Payment is NEVER automated. The system stops before payment.
+ * INVARIANTS (cannot be changed at runtime):
+ *   ❌ Payment is NEVER automated
+ *   ❌ Credentials are NEVER stored (only BMS session cookies via storageState)
+ *   ❌ No anti-bot evasion — uses real user session
+ *   ✅ Only goes as far as the BMS order-summary/payment page
+ *   ✅ Returns a continuation URL the user taps to complete payment
  *
- * Capability detection happens step-by-step:
- * 1. Can we get the seat map? (seatMap)
- * 2. Can we select seats? (seatSelection)
- * 3. Does the flow enter a temporary hold state? (seatHold)
- * 4. Is there a resumable booking URL? (resumableBookingSession)
- * 5. Payment → NEVER_SUPPORTED (hard-coded)
+ * Flow:
+ *   1. If session file exists → try real browser-automated seat hold
+ *   2. If hold succeeds → return order URL (direct payment link)
+ *   3. If anything fails → fall back to notification-only (send booking link)
  *
- * If any step fails or requires bypassing security: return BOOKING_NOT_SUPPORTED.
+ * Session setup (one-time): npm run session:setup
  */
 
 export interface BookingAttemptResult {
@@ -34,50 +39,104 @@ const DEFAULT_CAPABILITIES: BookingCapabilities = {
     payment: 'never_supported',
 };
 
-/**
- * Attempts to detect whether an actual legitimate seat hold is possible.
- *
- * Currently returns NOT_SUPPORTED because:
- * - The legitimate BMS booking flow requires user authentication.
- * - Phase 10 of the spec requires this to be tested against real shows first.
- * - Automated seat holding will NOT be implemented without validating the full
- *   legitimate flow against a real low-demand show.
- *
- * This function is the extension point for Phase 10.
- */
 export async function attemptSeatHold(
     show: MovieShow,
     seatSelection: SeatSelectionResult,
-    _watchId: number
+    _watchId: number,
+    fallbackSeatsStr?: string | null
 ): Promise<BookingAttemptResult> {
-    log.info(
-        { showId: show.showId, seats: seatSelection.seats },
-        'Seat hold attempted — checking capabilities'
-    );
 
-    // Phase 10: validate legitimate booking flow capability first.
-    // Until validated against a real show, this must return not_supported.
+    // ── Path A: Real automated seat hold (requires session setup) ─────────────
+    if (hasSession() && show.bookingUrl && show.bookable) {
+
+        const seatsToHold = seatSelection.found && seatSelection.seats.length > 0
+            ? seatSelection.seats
+            : []; // Will try all fallback groups if preferred empty
+
+        const fallbackGroups = parseFallbackGroups(fallbackSeatsStr ?? null);
+
+        log.info(
+            { showId: show.showId, seats: seatsToHold, fallbackGroups: fallbackGroups.length },
+            '🎭 Attempting real browser-automated seat hold'
+        );
+
+        try {
+            const session = await loadBmsSession();
+
+            if (session) {
+                const holdResult = await holdSeatsAutomated(
+                    session.context,
+                    show,
+                    seatsToHold,
+                    fallbackGroups
+                );
+
+                // Always close the browser after we're done
+                await session.browser.close().catch(() => { });
+
+                if (holdResult.held && holdResult.orderUrl) {
+                    // ✅ SUCCESS — seats are held, user just needs to pay
+                    const capabilities: BookingCapabilities = {
+                        seatMap: 'supported',
+                        seatSelection: 'supported',
+                        seatHold: 'supported',
+                        resumableBookingSession: 'supported',
+                        payment: 'never_supported',
+                    };
+
+                    const seatStr = holdResult.seatsSelected.join(' + ');
+                    log.info({ seats: holdResult.seatsSelected, orderUrl: holdResult.orderUrl }, '✅ Seats held');
+
+                    return {
+                        supported: true,
+                        held: true,
+                        continuationUrl: holdResult.orderUrl,
+                        capabilities,
+                        notes: [
+                            `✅ Seats ${seatStr} are HELD`,
+                            `⏳ BMS hold timer: ~10 minutes`,
+                            `💳 Open the Telegram link NOW to pay`,
+                            `🔒 Payment: user-driven only`,
+                            `🔗 Order URL: ${holdResult.orderUrl}`,
+                        ].join('\n'),
+                    };
+                }
+
+                // Hold failed — log the reason and fall through to notification-only
+                log.warn(
+                    { error: holdResult.error, seats: holdResult.seatsSelected },
+                    'Seat hold attempt failed — falling back to notification-only'
+                );
+            }
+        } catch (err) {
+            log.error({ err }, 'Browser automation threw — falling back to notification-only');
+        }
+    } else if (!hasSession()) {
+        log.info('No BMS session configured — notification-only mode. Run: npm run session:setup');
+    }
+
+    // ── Path B: Notification-only (no session, or hold failed) ───────────────
+    // Send the TICKETS LIVE message with a direct booking link.
+    // User opens it and manually selects seats + pays.
+
+    log.info({ showId: show.showId }, 'Notification-only mode — returning booking URL');
+
     const capabilities: BookingCapabilities = {
-        ...DEFAULT_CAPABILITIES,
         seatMap: 'unknown',
-        seatSelection: 'unknown',
-        seatHold: 'not_supported', // Will be updated when Phase 10 is implemented
-        resumableBookingSession: 'not_supported',
+        seatSelection: hasSession() ? 'not_supported' : 'unknown',
+        seatHold: 'not_supported',
+        resumableBookingSession: show.bookingUrl ? 'supported' : 'not_supported',
         payment: 'never_supported',
     };
-
-    log.warn(
-        { showId: show.showId },
-        'Automated seat hold is not yet validated — falling back to notification-only flow'
-    );
 
     return {
         supported: false,
         held: false,
         continuationUrl: show.bookingUrl,
         capabilities,
-        notes:
-            'Seat hold capability not yet validated against legitimate booking flow. See Phase 10 in spec.',
+        notes: hasSession()
+            ? 'Seat hold attempted but failed (seats may have been grabbed). Notification sent with booking link.'
+            : 'No BMS session — notification-only mode. Run: npm run session:setup to enable auto-hold.',
     };
 }
 
