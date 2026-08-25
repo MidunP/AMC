@@ -9,7 +9,7 @@ export function getLogger(name?: string): pino.Logger {
         const isDev = env.NODE_ENV === 'development';
 
         _logger = pino({
-            level: env.LOG_LEVEL,
+            level: env.LOG_LEVEL as pino.Level,
             transport: isDev
                 ? {
                     target: 'pino-pretty',

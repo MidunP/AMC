@@ -15,7 +15,7 @@ const envSchema = z.object({
         .refine((n) => n >= 3, {
             message: 'POLL_INTERVAL_MINUTES must be at least 3 to respect rate limits',
         }),
-    LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+    LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
     NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
 });
 
