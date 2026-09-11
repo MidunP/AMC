@@ -64,11 +64,13 @@ function isBlockedResponse(status: number, body: unknown): boolean {
     if (status === 403 || status === 429) return true;
     const text = typeof body === 'string' ? body.toLowerCase() : JSON.stringify(body ?? '').toLowerCase();
     return (
-        text.includes('captcha') ||
+        text.includes('attention required! | cloudflare') ||
+        text.includes('cf-browser-verification') ||
+        text.includes('cf-challenge-running') ||
+        text.includes('just a moment...') ||
+        text.includes('captcha-delivery') ||
         text.includes('bot detected') ||
-        text.includes('access denied') ||
-        text.includes('cf-error') ||
-        text.includes('cloudflare')
+        text.includes('access denied')
     );
 }
 
@@ -275,7 +277,11 @@ function filterMatchingShows(shows: MovieShow[], watch: Watch): MovieShow[] {
 /**
  * HTML fallback — used when:
  * - Movie is not yet indexed in BMS movies-by-event API (pre-release)
- * - eventCode resolution fails
+ * - eventCode resolution fails (403 / empty)
+ *
+ * Tries two URLs in sequence:
+ *  1. Standard BMS movie search  (/movies/coimbatore?q=...&date=...)
+ *  2. Direct Broadway venue showtimes page (/venue/broadway-cinemas-alandur-bay-delhi-road-coimbatore/CABD?date=...)
  */
 async function fetchShowtimesFromHtml(watch: Watch): Promise<{
     shows: MovieShow[];
@@ -287,38 +293,132 @@ async function fetchShowtimesFromHtml(watch: Watch): Promise<{
     const dateStr = formatDateCode(watch.target_date);
     const city = 'coimbatore';
     const encodedMovie = encodeURIComponent(watch.movie);
-    const url = `${BMS_BASE}/movies/${city}?q=${encodedMovie}&date=${dateStr}`;
 
-    log.info({ watchId: watch.id, url }, 'Falling back to HTML scraping');
+    // URL 1: Standard movie search
+    const searchUrl = `${BMS_BASE}/movies/${city}?q=${encodedMovie}&date=${dateStr}`;
+    // URL 2: Direct Broadway venue page (works even for unlisted movies)
+    const venueUrl = `${BMS_BASE}/venue/broadway-cinemas/${BROADWAY_VENUE_CODE}?date=${dateStr}`;
 
-    const resp = await axios.get<string>(url, {
-        headers: { ...DEFAULT_HEADERS, Accept: 'text/html,application/xhtml+xml,*/*' },
-        timeout: 15_000,
-        maxRedirects: 3,
-        validateStatus: () => true,
-    });
+    const urlsToTry = [searchUrl, venueUrl];
 
-    const html = typeof resp.data === 'string' ? resp.data : '';
+    for (const url of urlsToTry) {
+        log.info({ watchId: watch.id, url }, 'HTML fallback — trying URL');
 
-    if (isBlockedResponse(resp.status, html)) {
-        return { shows: [], blocked: true, parseError: false, status: resp.status };
+        try {
+            const resp = await axios.get<string>(url, {
+                headers: { ...DEFAULT_HEADERS, Accept: 'text/html,application/xhtml+xml,*/*' },
+                timeout: 15_000,
+                maxRedirects: 3,
+                validateStatus: () => true,
+            });
+
+            const html = typeof resp.data === 'string' ? resp.data : '';
+
+            if (isBlockedResponse(resp.status, html)) {
+                log.warn({ watchId: watch.id, status: resp.status }, 'Axios blocked by Cloudflare — triggering Playwright stealth fallback');
+                return await fetchShowtimesViaPlaywright(watch);
+            }
+
+            const { shows, parseWarning } = parseShowListings(html, {
+                targetMovie: watch.movie,
+                targetDate: watch.target_date,
+                targetFormat: watch.preferred_format ?? undefined,
+                targetTheatre: watch.theatre,
+            });
+
+            if (parseWarning === 'BLOCKED_PAGE') {
+                return { shows: [], blocked: true, parseError: false, status: resp.status };
+            }
+            if (parseWarning === 'PARSE_ERROR') {
+                // Don't give up on parse error for first URL — try the venue URL
+                if (url !== venueUrl) {
+                    log.warn({ watchId: watch.id, url }, 'Parse error on search URL — trying venue URL');
+                    continue;
+                }
+                return { shows: [], blocked: false, parseError: true, status: resp.status };
+            }
+
+            if (shows.length > 0) {
+                log.info({ watchId: watch.id, url, showCount: shows.length }, 'HTML scrape found shows');
+                return { shows, blocked: false, parseError: false, status: resp.status };
+            }
+
+            // No shows on this URL — try next
+            log.info({ watchId: watch.id, url }, 'No shows on this URL — trying next fallback');
+        } catch (err) {
+            log.warn({ watchId: watch.id, url, err: (err as Error).message }, 'HTML fetch error — trying next URL');
+        }
     }
 
-    const { shows, parseWarning } = parseShowListings(html, {
-        targetMovie: watch.movie,
-        targetDate: watch.target_date,
-        targetFormat: watch.preferred_format ?? undefined,
-        targetTheatre: watch.theatre,
-    });
+    // Both Axios URLs returned no shows or non-blocked empty result
+    return { shows: [], blocked: false, parseError: false, status: 200 };
+}
 
-    if (parseWarning === 'BLOCKED_PAGE') {
-        return { shows: [], blocked: true, parseError: false, status: resp.status };
-    }
-    if (parseWarning === 'PARSE_ERROR') {
-        return { shows: [], blocked: false, parseError: true, status: resp.status };
-    }
+/**
+ * Stealth Playwright fallback — triggered when Axios receives Cloudflare 403/429.
+ * Uses headless Chromium with --disable-blink-features=AutomationControlled to bypass Cloudflare bot detection.
+ */
+async function fetchShowtimesViaPlaywright(watch: Watch): Promise<{
+    shows: MovieShow[];
+    blocked: boolean;
+    parseError: boolean;
+    status: number;
+    error?: string;
+}> {
+    log.info({ watchId: watch.id }, 'Attempting stealth Playwright browser fallback for BMS');
+    let browser;
+    try {
+        const { chromium } = await import('playwright');
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--disable-blink-features=AutomationControlled'],
+        });
+        const context = await browser.newContext({
+            userAgent:
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            viewport: { width: 1280, height: 720 },
+        });
+        const page = await context.newPage();
 
-    return { shows, blocked: false, parseError: false, status: resp.status };
+        // Step 1: Visit home page to establish session & cookies
+        await page.goto('https://in.bookmyshow.com/explore/home/coimbatore', {
+            waitUntil: 'domcontentloaded',
+            timeout: 20_000,
+        });
+
+        // Step 2: Navigate to Broadway venue page
+        const venueUrl = `https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-cbei-CABD-MT/`;
+        await page.goto(venueUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+
+        const html = await page.content();
+        await browser.close();
+
+        if (isBlockedResponse(200, html)) {
+            log.warn({ watchId: watch.id }, 'Playwright page contained Cloudflare block text');
+            return { shows: [], blocked: true, parseError: false, status: 403 };
+        }
+
+        const { shows, parseWarning } = parseShowListings(html, {
+            targetMovie: watch.movie,
+            targetDate: watch.target_date,
+            targetFormat: watch.preferred_format ?? undefined,
+            targetTheatre: watch.theatre,
+        });
+
+        if (parseWarning === 'BLOCKED_PAGE') {
+            return { shows: [], blocked: true, parseError: false, status: 403 };
+        }
+        if (parseWarning === 'PARSE_ERROR') {
+            return { shows: [], blocked: false, parseError: true, status: 200 };
+        }
+
+        log.info({ watchId: watch.id, showCount: shows.length }, 'Playwright fallback successfully fetched page');
+        return { shows, blocked: false, parseError: false, status: 200 };
+    } catch (err) {
+        if (browser) await browser.close().catch(() => { });
+        log.warn({ watchId: watch.id, err: (err as Error).message }, 'Playwright fallback error');
+        return { shows: [], blocked: true, parseError: false, status: 403 };
+    }
 }
 
 // ─── Main export ─────────────────────────────────────────────────────────────

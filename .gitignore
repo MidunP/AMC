@@ -1,6 +1,32 @@
+# Environment — NEVER commit your tokens
 .env
-node_modules/
+.env.local
+
+# Build output
 dist/
+*.tsbuildinfo
+
+# Runtime data
 data/
+*.db
+*.db-shm
+*.db-wal
+
+# Playwright browser session (contains your BMS cookies)
+data/bms-session.json
+
+# Logs
 *.log
 logs/
+dry-run-result.txt
+dry-err.txt
+
+# Dependencies
+node_modules/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

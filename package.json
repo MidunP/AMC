@@ -23,6 +23,7 @@
     "watch:capability": "ts-node src/cli/cli.ts capability",
     "session:setup": "ts-node src/cli/cli.ts session:setup",
     "lint": "eslint src --ext .ts",
+    "dry-run": "ts-node dry-run.ts",
     "lint:fix": "eslint src --ext .ts --fix"
   },
   "dependencies": {

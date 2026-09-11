@@ -124,10 +124,13 @@ async function replyHelp(token: string, chatId: string): Promise<void> {
     const text =
         `🎬 <b>Broadway FDFS Watcher — Remote Control</b>\n\n` +
         `Commands you can send from your phone:\n\n` +
-        `📋 <code>/list</code> — View all active watches & status\n` +
-        `🟢 <code>/status</code> — System uptime & status summary\n` +
-        `➕ <code>/add Movie, YYYY-MM-DD, Format, Seats, OpenTime</code>\n` +
-        `   <i>Example:</i> <code>/add Pushpa 3, 2026-12-25, EPIQ, H12,H13, 2026-12-20 18:00</code>\n` +
+        `📋 <code>/list</code> — View all active watches &amp; status\n` +
+        `🟢 <code>/status</code> — System uptime &amp; status summary\n` +
+        `➕ <code>/add Movie | Date | Format | Seats | OpenTime</code>\n` +
+        `   Use <b>|</b> (pipe) as separator to avoid conflicts with movie names.\n` +
+        `   <i>Example:</i> <code>/add Pushpa 3 | 2026-12-25 | EPIQ | H12 H13 | 2026-12-20 18:00</code>\n` +
+        `   Seats: space or comma separated (H12 H13 or H12,H13)\n` +
+        `   OpenTime: optional — enables smart booking window\n` +
         `❌ <code>/remove &lt;id&gt;</code> — Delete a watch\n` +
         `⏸️ <code>/pause &lt;id&gt;</code> — Pause a watch\n` +
         `▶️ <code>/resume &lt;id&gt;</code> — Resume a watch\n` +
@@ -187,17 +190,23 @@ async function handleAddCommand(argsStr: string, token: string, chatId: string):
         await sendReply(
             token,
             chatId,
-            `⚠️ <b>Format:</b>\n<code>/add Movie, Date, Format, Seats, OpenTime</code>\n\n` +
-            `<b>Example:</b>\n<code>/add Spider-Man, 2026-12-25, EPIQ, H12,H13, 2026-12-20 18:00</code>`
+            `⚠️ <b>Format:</b>\n<code>/add Movie | Date | Format | Seats | OpenTime</code>\n\n` +
+            `<b>Example:</b>\n<code>/add Pushpa 3 | 2026-12-25 | EPIQ | H12 H13 | 2026-12-20 18:00</code>\n\n` +
+            `Seats can be space or comma separated. OpenTime is optional.`
         );
         return;
     }
 
-    const parts = argsStr.split(',').map((p) => p.trim());
+    // Support both pipe (|) and comma (,) as separators.
+    // Pipe is preferred to avoid conflicts with movie names containing numbers.
+    const separator = argsStr.includes('|') ? '|' : ',';
+    const parts = argsStr.split(separator).map((p) => p.trim());
     const movie = parts[0];
     const date = parts[1] ?? new Date().toISOString().split('T')[0];
     const format = parts[2] || null;
-    const seats = parts[3] || null;
+    // Normalize seats: support both "H12 H13" and "H12,H13" → always store as "H12,H13"
+    const rawSeats = parts[3] || null;
+    const seats = rawSeats ? rawSeats.replace(/\s+/g, ',').replace(/,+/g, ',').trim() : null;
     let rawOpen = parts[4] || null;
 
     let openIso: string | null = null;
