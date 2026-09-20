@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Broadway Cinemas FDFS Ticket Watcher & Booking Assistant",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.0.0 <23.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
