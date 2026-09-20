@@ -17,6 +17,16 @@ const envSchema = z.object({
         }),
     LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
     NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
+
+    // ─── Email Notifications ───────────────────────────────────────────────────
+    EMAIL_ENABLED: z.string().optional().transform((val) => val === 'true' || val === '1'),
+    SMTP_HOST: z.string().default('smtp.gmail.com'),
+    SMTP_PORT: z.string().default('587').transform(Number),
+    SMTP_SECURE: z.string().optional().transform((val) => val === 'true' || val === '1'),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    EMAIL_FROM: z.string().optional(),
+    EMAIL_TO: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

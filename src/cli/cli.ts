@@ -13,6 +13,7 @@ import {
     getCheckLogs,
 } from '../db/repository';
 import { sendTestMessage } from '../notify/telegram';
+import { sendTestEmail } from '../notify/email';
 import { checkBroadwayShowtimes, probeVenueApi } from '../cinema/broadway/broadway.adapter';
 import { insertCheckLog, updateLastChecked } from '../db/repository';
 import { attemptSeatHold } from '../booking/booking.service';
@@ -324,6 +325,24 @@ program
             console.log('✅ Test message sent! Check your Telegram.\n');
         } else {
             console.error('❌ Failed to send test message. Check your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.\n');
+            process.exit(1);
+        }
+        process.exit(0);
+    });
+
+// ─── test-email ────────────────────────────────────────────────────────────────
+
+program
+    .command('test-email')
+    .description('Send a test HTML Email notification')
+    .option('--to <email>', 'Recipient email address')
+    .action(async (opts) => {
+        console.log('\n📧 Sending test Email notification...');
+        const ok = await sendTestEmail(opts.to);
+        if (ok) {
+            console.log('✅ Test email sent! Check your inbox.\n');
+        } else {
+            console.error('❌ Failed to send test email. Ensure SMTP configuration (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_TO) is set in .env.\n');
             process.exit(1);
         }
         process.exit(0);

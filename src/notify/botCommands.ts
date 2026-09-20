@@ -10,6 +10,7 @@ import {
 } from '../db/repository';
 import { getWindowStatus, formatWindowStatus } from '../watcher/timeWindow';
 import { checkBroadwayShowtimes } from '../cinema/broadway/broadway.adapter';
+import { sendTestEmail } from './email';
 
 const log = getLogger('telegram-bot-commands');
 
@@ -110,6 +111,10 @@ async function handleCommand(text: string, token: string, chatId: string): Promi
             await handleCheckCommand(argsStr, token, chatId);
             break;
 
+        case '/email':
+            await handleEmailCommand(argsStr, token, chatId);
+            break;
+
         default:
             if (text.startsWith('/')) {
                 await sendReply(token, chatId, `❓ Unknown command: <code>${cmd}</code>\nSend /help to see available commands.`);
@@ -126,6 +131,7 @@ async function replyHelp(token: string, chatId: string): Promise<void> {
         `Commands you can send from your phone:\n\n` +
         `📋 <code>/list</code> — View all active watches &amp; status\n` +
         `🟢 <code>/status</code> — System uptime &amp; status summary\n` +
+        `📧 <code>/email</code> — Check or test personal email notifications\n` +
         `➕ <code>/add Movie | Date | Format | Seats | OpenTime</code>\n` +
         `   Use <b>|</b> (pipe) as separator to avoid conflicts with movie names.\n` +
         `   <i>Example:</i> <code>/add Pushpa 3 | 2026-12-25 | EPIQ | H12 H13 | 2026-12-20 18:00</code>\n` +
@@ -173,16 +179,48 @@ async function replyList(token: string, chatId: string): Promise<void> {
 async function replyStatus(token: string, chatId: string): Promise<void> {
     const watches = getAllWatches();
     const activeCount = watches.filter((w) => w.status === 'watching').length;
+    const env = getEnv();
+    const emailStatus = env.EMAIL_TO
+        ? `🟢 Configured (<code>${env.EMAIL_TO}</code>)`
+        : '⚠️ Not configured (Set EMAIL_TO in .env)';
 
     const text =
         `🟢 <b>WATCHER STATUS REPORT</b>\n\n` +
         `👁️ Total Watches: <b>${watches.length}</b>\n` +
         `⚡ Active Watching: <b>${activeCount}</b>\n` +
+        `📧 Email Alerts: ${emailStatus}\n` +
         `⏱️ Engine: <b>ONLINE (24/7 Remote)</b>\n` +
         `📍 Venue: <b>Broadway Cinemas Coimbatore</b>\n\n` +
         `All systems operational. Send /list to view active watches.`;
 
     await sendReply(token, chatId, text);
+}
+
+async function handleEmailCommand(argsStr: string, token: string, chatId: string): Promise<void> {
+    const env = getEnv();
+    const target = argsStr.trim() || env.EMAIL_TO;
+
+    if (!target) {
+        await sendReply(
+            token,
+            chatId,
+            `⚠️ <b>Email Alerts Not Configured</b>\n\nPlease set <code>EMAIL_TO</code> in your .env file or specify an email address:\n<code>/email user@example.com</code>`
+        );
+        return;
+    }
+
+    await sendReply(token, chatId, `📧 Sending test email to <code>${target}</code>...`);
+    const success = await sendTestEmail(target);
+
+    if (success) {
+        await sendReply(token, chatId, `✅ Test email successfully sent to <code>${target}</code>! Check your inbox.`);
+    } else {
+        await sendReply(
+            token,
+            chatId,
+            `❌ Email delivery failed. Ensure SMTP settings (SMTP_HOST, SMTP_USER, SMTP_PASS) are valid in .env.`
+        );
+    }
 }
 
 async function handleAddCommand(argsStr: string, token: string, chatId: string): Promise<void> {

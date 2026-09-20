@@ -55,6 +55,11 @@ export function updateBookingState(id: number, state: BookingState): void {
     db.prepare("UPDATE watches SET booking_state = ?, updated_at = datetime('now') WHERE id = ?").run(state, id);
 }
 
+export function updateWatchSeats(id: number, preferredSeats: string | null, fallbackSeats: string | null): void {
+    const db = getDb();
+    db.prepare("UPDATE watches SET preferred_seats = ?, fallback_seats = ?, updated_at = datetime('now') WHERE id = ?").run(preferredSeats, fallbackSeats, id);
+}
+
 export function updateLastChecked(id: number, result: CheckResult): void {
     const db = getDb();
     db.prepare(

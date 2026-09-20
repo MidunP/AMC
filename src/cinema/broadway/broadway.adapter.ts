@@ -1,9 +1,17 @@
 import axios, { AxiosError } from 'axios';
+import http from 'http';
+import https from 'https';
 import type { Watch, AdapterResult, MovieShow } from '../../types';
 import { parseShowListings } from './parser';
 import { getLogger } from '../../config/logger';
 
 const log = getLogger('broadway-adapter');
+
+// Persistent HTTP client with Connection Keep-Alive to eliminate TCP handshake latency
+const httpClient = axios.create({
+    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 25 }),
+    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 25 }),
+});
 
 /**
  * Broadway Cinemas / BookMyShow Adapter — Phase 8 + 9
@@ -48,7 +56,7 @@ const BMS_MOVIES_API = `${BMS_BASE}/api/movies-data/movies-by-event`;
 
 const DEFAULT_HEADERS = {
     'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
     Accept: 'application/json, text/plain, */*',
     'Accept-Language': 'en-IN,en;q=0.9,ta;q=0.8',
     Referer: 'https://in.bookmyshow.com/',
@@ -83,7 +91,7 @@ function isBlockedResponse(status: number, body: unknown): boolean {
  */
 async function resolveEventCode(movieName: string): Promise<string | null> {
     try {
-        const resp = await axios.get<unknown>(BMS_MOVIES_API, {
+        const resp = await httpClient.get<unknown>(BMS_MOVIES_API, {
             params: {
                 appCode: 'MOBAND2',
                 appVersion: '14304',
@@ -151,7 +159,7 @@ async function fetchShowtimesFromApi(
 
     log.info({ watchId: watch.id, eventCode, dateCode, venueCode: BROADWAY_VENUE_CODE }, 'Fetching BMS showtimes');
 
-    const resp = await axios.get<unknown>(BMS_SHOWTIMES_API, {
+    const resp = await httpClient.get<unknown>(BMS_SHOWTIMES_API, {
         params,
         headers: DEFAULT_HEADERS,
         timeout: 15_000,
@@ -305,7 +313,7 @@ async function fetchShowtimesFromHtml(watch: Watch): Promise<{
         log.info({ watchId: watch.id, url }, 'HTML fallback — trying URL');
 
         try {
-            const resp = await axios.get<string>(url, {
+            const resp = await httpClient.get<string>(url, {
                 headers: { ...DEFAULT_HEADERS, Accept: 'text/html,application/xhtml+xml,*/*' },
                 timeout: 15_000,
                 maxRedirects: 3,
@@ -370,13 +378,16 @@ async function fetchShowtimesViaPlaywright(watch: Watch): Promise<{
     try {
         const { chromium } = await import('playwright');
         browser = await chromium.launch({
+            channel: 'chrome',
             headless: true,
-            args: ['--disable-blink-features=AutomationControlled'],
+            args: [
+                '--disable-blink-features=AutomationControlled',
+            ],
         });
         const context = await browser.newContext({
-            userAgent:
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-            viewport: { width: 1280, height: 720 },
+            viewport: { width: 1366, height: 768 },
+            locale: 'en-IN',
+            timezoneId: 'Asia/Kolkata',
         });
         const page = await context.newPage();
 
@@ -516,7 +527,7 @@ export async function probeVenueApi(movieName: string, dateCode: string): Promis
     const eventCode = await resolveEventCode(movieName);
     if (!eventCode) return { error: 'Could not resolve event code for movie', movie: movieName };
 
-    const resp = await axios.get<unknown>(BMS_SHOWTIMES_API, {
+    const resp = await httpClient.get<unknown>(BMS_SHOWTIMES_API, {
         params: {
             appCode: 'MOBAND2',
             appVersion: '14304',

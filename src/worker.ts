@@ -2,9 +2,11 @@ import cron from 'node-cron';
 import { getEnv } from './config/env';
 import { getLogger } from './config/logger';
 import { runMigrations, pruneOldLogs } from './db/migrations';
+import { syncPresets } from './db/presetLoader';
 import { getActiveWatches } from './db/repository';
 import { runWatchCycle } from './watcher/watcherWorker';
 import { sendStartupMessage, sendProcessError, sendDailyHeartbeat } from './notify/telegram';
+import { sendDailyHeartbeatEmail, sendProcessErrorEmail } from './notify/email';
 import { getWindowStatus } from './watcher/timeWindow';
 import { startTelegramBotListener } from './notify/botCommands';
 
@@ -19,6 +21,7 @@ async function bootstrap(): Promise<void> {
 
     // 2. Initialize database & run migrations
     runMigrations();
+    syncPresets();
 
     // 3. Prune old check_logs (older than 7 days)
     pruneOldLogs(7);
@@ -78,6 +81,7 @@ async function bootstrap(): Promise<void> {
 
             if (heartbeatWatches.length > 0) {
                 await sendDailyHeartbeat({ watches: heartbeatWatches });
+                await sendDailyHeartbeatEmail({ watches: heartbeatWatches });
             }
         } catch (err) {
             log.error({ err }, 'Daily heartbeat failed');
@@ -100,9 +104,10 @@ function buildCronExpression(intervalMinutes: number): string {
 // ─── Process error handling ────────────────────────────────────────────────────
 
 process.on('uncaughtException', async (err) => {
-    log.fatal({ err }, 'Uncaught exception — attempting Telegram alert');
+    log.fatal({ err }, 'Uncaught exception — attempting Telegram & Email alerts');
     try {
         await sendProcessError(err);
+        await sendProcessErrorEmail(err);
     } catch {
         // Best effort
     }
@@ -110,9 +115,11 @@ process.on('uncaughtException', async (err) => {
 });
 
 process.on('unhandledRejection', async (reason) => {
-    log.fatal({ reason }, 'Unhandled rejection — attempting Telegram alert');
+    log.fatal({ reason }, 'Unhandled rejection — attempting Telegram & Email alerts');
     try {
-        await sendProcessError(reason instanceof Error ? reason : new Error(String(reason)));
+        const errObj = reason instanceof Error ? reason : new Error(String(reason));
+        await sendProcessError(errObj);
+        await sendProcessErrorEmail(errObj);
     } catch {
         // Best effort
     }

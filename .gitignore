@@ -8,6 +8,7 @@ dist/
 
 # Runtime data
 data/
+!data/presets.json
 *.db
 *.db-shm
 *.db-wal

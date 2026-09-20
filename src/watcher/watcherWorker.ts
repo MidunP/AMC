@@ -19,6 +19,11 @@ import {
     sendParserError,
     sendApproachingAlert,
 } from '../notify/telegram';
+import {
+    sendTicketLiveEmail,
+    sendSeatsHeldEmail,
+    sendApproachingAlertEmail,
+} from '../notify/email';
 import { getLogger } from '../config/logger';
 
 const log = getLogger('watcher');
@@ -103,6 +108,11 @@ async function processWatch(watch: Watch): Promise<void> {
             if (Date.now() - lastAlert > APPROACH_ALERT_COOLDOWN_MS) {
                 const minutes = Math.ceil(ws.msUntilOpening / 60000);
                 await sendApproachingAlert({
+                    movie: watch.movie,
+                    minutesUntilOpening: minutes,
+                    expectedOpeningAt: watch.expected_opening_at!,
+                });
+                await sendApproachingAlertEmail({
                     movie: watch.movie,
                     minutesUntilOpening: minutes,
                     expectedOpeningAt: watch.expected_opening_at!,
@@ -257,6 +267,14 @@ async function processWatch(watch: Watch): Promise<void> {
             seats: seatMatch.seats,
             continuationUrl: holdResult.continuationUrl,
         });
+        await sendSeatsHeldEmail({
+            movie: watch.movie,
+            theatre: watch.theatre,
+            format: watch.preferred_format ?? 'Standard',
+            showtime: show.showtime,
+            seats: seatMatch.seats,
+            continuationUrl: holdResult.continuationUrl,
+        });
 
         updateBookingState(watch.id, 'user_payment_required');
     } else {
@@ -268,7 +286,7 @@ async function processWatch(watch: Watch): Promise<void> {
             ? watch.preferred_seats.split(',').map((s) => s.trim())
             : [];
 
-        await sendTicketLive({
+        const ticketPayload = {
             movie: watch.movie,
             theatre: watch.theatre,
             date: watch.target_date,
@@ -277,7 +295,10 @@ async function processWatch(watch: Watch): Promise<void> {
             preferredSeats,
             seatStatus: seatMatch.seatStatuses,
             bookingUrl: show.bookingUrl ?? 'https://in.bookmyshow.com',
-        });
+        };
+
+        await sendTicketLive(ticketPayload);
+        await sendTicketLiveEmail(ticketPayload);
 
         updateBookingState(watch.id, 'user_takeover');
     }

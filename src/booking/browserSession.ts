@@ -20,18 +20,20 @@ export async function loadBmsSession(): Promise<{ browser: Browser; context: Bro
 
     try {
         const browser = await chromium.launch({
+            channel: 'chrome',
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            args: [
+                '--disable-blink-features=AutomationControlled',
+            ],
         });
         const context = await browser.newContext({
             storageState: SESSION_FILE,
-            userAgent:
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            viewport: { width: 1280, height: 900 },
+            viewport: { width: 1366, height: 768 },
             locale: 'en-IN',
             timezoneId: 'Asia/Kolkata',
         });
-        log.info({ sessionFile: SESSION_FILE }, 'BMS session loaded');
+
+        log.info({ sessionFile: SESSION_FILE }, 'BMS session loaded (real Chrome)');
         return { browser, context };
     } catch (err) {
         log.error({ err }, 'Failed to load BMS session');
@@ -62,21 +64,29 @@ export async function setupBmsSession(): Promise<void> {
     console.log('  3. Come back here and press ENTER');
     console.log('────────────────────────────────────────────────────\n');
 
+    // Use the REAL installed Chrome browser — NOT Playwright's bundled Chromium.
+    // Cloudflare fingerprints the Chromium binary itself, so this is the only
+    // reliable way to avoid bot detection.
     const browser = await chromium.launch({
-        headless: false, // visible window so user can log in
-        args: ['--start-maximized'],
+        channel: 'chrome',   // ← uses your real Google Chrome installation
+        headless: false,
+        args: [
+            '--disable-blink-features=AutomationControlled',
+            '--start-maximized',
+        ],
     });
 
     const context = await browser.newContext({
-        userAgent:
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        viewport: null, // use the window size
+        viewport: null,  // use full window size
         locale: 'en-IN',
         timezoneId: 'Asia/Kolkata',
     });
 
     const page = await context.newPage();
-    await page.goto('https://in.bookmyshow.com', { waitUntil: 'domcontentloaded' });
+
+    // Small delay so Chrome fully initializes before navigation
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.goto('https://in.bookmyshow.com', { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
     // Wait for the user to log in
     await promptEnter('✋ Press ENTER once you are logged in to BookMyShow...');
